@@ -5,12 +5,19 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 
 
+def normalize_ticker(ticker: str) -> str:
+    """Canonical ticker form used by every data source: stripped and upper-case."""
+    return ticker.strip().upper()
+
+
 class MarketDataSource(ABC):
     """Contract for market data providers.
 
     Implementations push price updates into a shared PriceCache on their own
     schedule. Downstream code never calls the data source directly for prices —
     it reads from the cache.
+
+    All ticker arguments are normalised with normalize_ticker().
 
     Lifecycle:
         source = create_market_data_source(cache)

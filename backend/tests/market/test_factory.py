@@ -90,3 +90,17 @@ class TestFactory:
         with patch.dict(os.environ, env, clear=True):
             source = create_market_data_source(PriceCache())
         assert source._interval == 2.5
+
+    def test_empty_poll_interval_uses_default(self):
+        """MASSIVE_POLL_INTERVAL= (present but empty) falls back to 15s."""
+        env = {"MASSIVE_API_KEY": "k", "MASSIVE_POLL_INTERVAL": ""}
+        with patch.dict(os.environ, env, clear=True):
+            source = create_market_data_source(PriceCache())
+        assert source._interval == 15.0
+
+    def test_poll_interval_has_floor(self):
+        """Intervals below 1s are raised to 1s so the API is not hammered."""
+        env = {"MASSIVE_API_KEY": "k", "MASSIVE_POLL_INTERVAL": "0"}
+        with patch.dict(os.environ, env, clear=True):
+            source = create_market_data_source(PriceCache())
+        assert source._interval == 1.0

@@ -1,6 +1,17 @@
 # Market Data Backend — Summary
 
-**Status:** Complete, tested, reviewed. Updated 2026-11-07 to apply all fixes in `MARKET_INTERFACE.md` §8.
+**Status:** Complete, tested, reviewed. Updated 2026-11-07 to apply all fixes in `MARKET_INTERFACE.md` §8, then all findings in `MARKET_DATA_REVIEW.md` (second review, same day).
+
+## 2026-11-07 Review Fixes (`MARKET_DATA_REVIEW.md`)
+
+- **Massive timeout (M1)** — massive 2.2.0 ignores its own timeout; a silent server hung the poller forever (reproduced). The source now installs a 10 s timeout on the client's connection pool.
+- **No resurrection (M2)** — a ticker removed mid-poll was written back to the cache (reproduced). Writes now happen under a lock, only for still-tracked tickers.
+- **EOD retry (M3)** — on free keys, a failed first poll or a newly added ticker is retried after 60 s instead of an hour.
+- **Ticker normalisation (M4)** — `normalize_ticker()` (strip + upper-case) is shared by both sources and exported from `app.market`.
+- **Stable seeds (L1)** — unknown tickers get a seed derived from the ticker name, the same after a restart.
+- **Smaller fixes** — empty `MASSIVE_POLL_INTERVAL` means 15 s, with a 1 s floor (L2). `PriceCache.remove()` bumps `version`, so SSE pushes removals and an emptied cache sends `{}` (L3). SSE sends a `: ping` every 15 s when idle (L4) and no longer swallows `CancelledError` (L5). The EOD date is US/Eastern (L6).
+- **Hygiene (L7)** — dev tools and `rich` moved to a uv `[dependency-groups]` dev group (plain `uv run pytest`), the redundant conftest and asyncio markers were removed, and ruff format is clean.
+- **Tests (L8)** — seeded GBM volatility/correlation tests, a silent-socket timeout test, removal-race tests, poll-loop scheduling tests, and real exception injection. Timing tests use a bounded `wait_until` helper (`tests/helpers.py`) instead of fixed sleeps.
 
 ## 2026-11-07 Revision
 
@@ -54,20 +65,19 @@ MarketDataSource (ABC)
 
 ## Test Suite
 
-**106 tests, all passing; 98% coverage.** 7 test modules in `backend/tests/market/`. (Table below is from the original build.)
+**126 tests, all passing; 100% line coverage** (`uv run pytest --cov=app`). 7 test modules in `backend/tests/market/`:
 
-| Module | Tests | Coverage |
-|--------|-------|----------|
-| test_models.py | 11 | models.py: 100% |
-| test_cache.py | 13 | cache.py: 100% |
-| test_simulator.py | 17 | simulator.py: 98% |
-| test_simulator_source.py | 10 | (integration tests) |
-| test_factory.py | 7 | factory.py: 100% |
-| test_massive.py | 13 | massive_client.py: 56% (expected — API methods mocked) |
+| Module | Tests | Covers |
+|--------|-------|--------|
+| test_models.py | 14 | `PriceUpdate` maths and serialisation |
+| test_cache.py | 19 | `PriceCache` updates, `prev_close`, versioning |
+| test_simulator.py | 25 | GBM steps, seeds, correlations, volatility statistics |
+| test_simulator_source.py | 14 | Simulator lifecycle, normalisation, error resilience |
+| test_factory.py | 11 | Source selection, poll-interval parsing |
+| test_massive.py | 33 | Snapshot/EOD parsing from real SDK models, timeout, races, scheduling |
+| test_stream.py | 10 | SSE format, change detection, removals, keepalive, route |
 
-Overall coverage: 84%.
-
-## Code Review & Fixes Applied
+## First Code Review (2026-02-10, `archive/MARKET_DATA_REVIEW.md`)
 
 A comprehensive code review identified 7 issues. All were resolved:
 

@@ -146,8 +146,9 @@ class MarketDataSource(ABC):
 |---|---|---|
 | Cadence | 0.5 s | `MASSIVE_POLL_INTERVAL` (default 15 s) |
 | `start()` | Cache seeded synchronously from seed prices | One immediate poll, then loop |
-| `add_ticker()` | Price available immediately | Price appears on next poll |
-| Unknown ticker | Gets a random seed price ($50–$300) | Never appears in cache (Massive returns nothing) |
+| `add_ticker()` | Price available immediately | Price appears on next poll (≤ 60 s in `eod` mode) |
+| Unknown ticker | Seed price derived from the ticker name ($50–$300, stable across restarts) | Never appears in cache (Massive returns nothing) |
+| Ticker case | Normalised with `normalize_ticker()` (strip + upper-case) | Same |
 | Market closed | Keeps ticking | Prices freeze at last session |
 
 Callers must therefore tolerate `cache.get_price(t) is None` briefly after `add_ticker()`
@@ -160,13 +161,13 @@ def create_market_data_source(price_cache: PriceCache) -> MarketDataSource:
     """MassiveDataSource if MASSIVE_API_KEY is non-empty, else SimulatorDataSource."""
     api_key = os.environ.get("MASSIVE_API_KEY", "").strip()
     if api_key:
-        interval = float(os.environ.get("MASSIVE_POLL_INTERVAL", "15"))
+        interval = max(float(os.environ.get("MASSIVE_POLL_INTERVAL") or 15), 1.0)
         return MassiveDataSource(api_key, price_cache, poll_interval=interval)
     return SimulatorDataSource(price_cache)
 ```
 
-`MASSIVE_POLL_INTERVAL` is a new optional env var (add to `.env.example`). Paid plans have no
-call limit, so 2–5 s is reasonable there.
+`MASSIVE_POLL_INTERVAL` is optional (in `.env.example`); empty means 15 s and values below
+1 s are raised to 1 s. Paid plans have no call limit, so 2–5 s is reasonable there.
 
 ## 7. `MassiveDataSource` — design
 
@@ -178,7 +179,7 @@ variable, the source detects this on its first poll:
 | Mode | Endpoint | Used when | Interval |
 |---|---|---|---|
 | `snapshot` | `GET /v2/snapshot/locale/us/markets/stocks/tickers?tickers=...` | Default (Starter+) | `poll_interval` |
-| `eod` | `GET /v2/aggs/grouped/locale/us/market/stocks/{date}` | Snapshot returned 403 `NOT_AUTHORIZED` | max(`poll_interval`, 3600 s) |
+| `eod` | `GET /v2/aggs/grouped/locale/us/market/stocks/{date}` | Snapshot returned 403 `NOT_AUTHORIZED` | max(`poll_interval`, 3600 s); 60 s while a ticker has no price (§7.3) |
 
 Both are one API call per poll, whatever the watchlist size. In `eod` mode prices are the
 latest daily close and don't move intraday — the app still works, but shows a static
@@ -205,108 +206,24 @@ def snapshot_price(snap: TickerSnapshot) -> float | None:
 Timestamp: `snap.updated / 1e9` (nanoseconds). Fall back to `time.time()` if `updated` is
 `None`. `prev_close`: `snap.prev_day.close`.
 
-### 7.3 Reference implementation
+### 7.3 Implementation notes
 
-```python
-class MassiveDataSource(MarketDataSource):
-    """Polls Massive REST for all tracked tickers in one call per cycle."""
+The code is `backend/app/market/massive_client.py` (no copy here, to avoid drift). Behaviour
+beyond §7.1–7.2, added after the 2026-11-07 review (`MARKET_DATA_REVIEW.md`):
 
-    EOD_MIN_INTERVAL = 3600.0
-
-    def __init__(self, api_key: str, price_cache: PriceCache, poll_interval: float = 15.0) -> None:
-        self._client = RESTClient(api_key=api_key)
-        self._cache = price_cache
-        self._interval = poll_interval
-        self._tickers: list[str] = []
-        self._mode = "snapshot"
-        self._task: asyncio.Task | None = None
-
-    async def start(self, tickers: list[str]) -> None:
-        self._tickers = [t.upper() for t in tickers]
-        await self._poll_once()
-        self._task = asyncio.create_task(self._poll_loop(), name="massive-poller")
-
-    async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
-
-    async def add_ticker(self, ticker: str) -> None:
-        ticker = ticker.upper()
-        if ticker not in self._tickers:
-            self._tickers.append(ticker)
-
-    async def remove_ticker(self, ticker: str) -> None:
-        ticker = ticker.upper()
-        self._tickers = [t for t in self._tickers if t != ticker]
-        self._cache.remove(ticker)
-
-    def get_tickers(self) -> list[str]:
-        return list(self._tickers)
-
-    async def _poll_loop(self) -> None:
-        while True:
-            interval = self._interval if self._mode == "snapshot" else max(self._interval, self.EOD_MIN_INTERVAL)
-            await asyncio.sleep(interval)
-            await self._poll_once()
-
-    async def _poll_once(self) -> None:
-        """One poll; errors are logged and retried next cycle."""
-        if not self._tickers:
-            return
-        try:
-            if self._mode == "snapshot":
-                await asyncio.to_thread(self._poll_snapshots)
-            else:
-                await asyncio.to_thread(self._poll_eod)
-        except BadResponse as e:
-            if self._mode == "snapshot" and "NOT_AUTHORIZED" in str(e):
-                logger.warning("Massive plan has no snapshot access; switching to end-of-day prices")
-                self._mode = "eod"
-                await asyncio.to_thread(self._poll_eod)
-            else:
-                logger.error("Massive poll failed: %s", e)
-        except Exception:
-            logger.exception("Massive poll failed")
-
-    def _poll_snapshots(self) -> None:
-        snaps = self._client.get_snapshot_all(SnapshotMarketType.STOCKS, tickers=self._tickers)
-        for snap in snaps:
-            price = snapshot_price(snap)
-            if price is None:
-                continue
-            self._cache.update(
-                ticker=snap.ticker,
-                price=price,
-                timestamp=snap.updated / 1e9 if snap.updated else None,
-                prev_close=snap.prev_day.close if snap.prev_day else None,
-            )
-
-    def _poll_eod(self) -> None:
-        """Latest two daily closes from grouped-daily (walks back over non-trading days)."""
-        wanted = set(self._tickers)
-        days: list[dict[str, GroupedDailyAgg]] = []
-        day = date.today()
-        while len(days) < 2 and day > date.today() - timedelta(days=10):
-            bars = self._client.get_grouped_daily_aggs(day.isoformat())
-            if bars:
-                days.append({b.ticker: b for b in bars if b.ticker in wanted})
-            day -= timedelta(days=1)
-        latest, prior = (days + [{}, {}])[:2]
-        for ticker, bar in latest.items():
-            prev = prior.get(ticker)
-            self._cache.update(ticker, bar.close, bar.timestamp / 1000, prev.close if prev else None)
-```
-
-Notes:
-
+- **Request timeout.** massive 2.2.0 builds a `urllib3.Timeout` but never applies it, so a
+  stalled connection would block the poller forever. `MassiveDataSource(request_timeout=10)`
+  installs it on the client's connection pool.
+- **No resurrection.** Poll results are written under a lock, and only for tickers still
+  tracked, so a ticker removed while a poll is in flight stays removed.
+- **EOD retry.** In `eod` mode the next poll is due after `EOD_RETRY_INTERVAL` (60 s) while
+  any tracked ticker has no cached price (failed first poll, newly added ticker), otherwise
+  after max(`poll_interval`, 3600 s). The loop wakes every min(`poll_interval`, 60 s) to
+  check. A first poll can cost 1 snapshot (403) + up to 5 grouped-daily calls (Monday
+  morning), so it may hit the Basic 5 calls/min limit; the retry a minute later succeeds.
+- **Market date.** "Today" for grouped-daily is the US/Eastern date, not the server's.
 - The `"NOT_AUTHORIZED"` string match is based on the documented Polygon error body; confirm
   it with a free key and adjust if the body differs (§9).
-- `eod` mode makes up to ~4 calls per poll (today may be empty, weekends). On Basic
-  (5 calls/min) that is fine at a 1 h interval.
-- The client is created in `__init__`; it is cheap and does no network I/O until a call.
 
 ## 8. Changes Needed to the Current Code
 

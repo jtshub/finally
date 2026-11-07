@@ -9,15 +9,6 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "numpy>=2.0.0",
     "massive>=1.0.0",
-    "rich>=13.0.0",
-]
-
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
-    "pytest-cov>=5.0.0",
-    "ruff>=0.7.0",
 ]
 
 [build-system]
@@ -55,4 +46,13 @@ exclude_lines = [
     "raise NotImplementedError",
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
+    "pytest-cov>=7.1.0",
+    "rich>=15.0.0",
+    "ruff>=0.17.4",
 ]
