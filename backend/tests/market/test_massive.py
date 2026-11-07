@@ -1,7 +1,12 @@
 """Tests for MassiveDataSource using real SDK models built from documented JSON."""
 
-from datetime import date
-from unittest.mock import MagicMock
+import asyncio
+import socket
+import threading
+import time
+from datetime import datetime
+from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 from massive.exceptions import BadResponse
@@ -9,6 +14,7 @@ from massive.rest.models import GroupedDailyAgg, TickerSnapshot
 
 from app.market.cache import PriceCache
 from app.market.massive_client import MassiveDataSource, snapshot_price
+from tests.helpers import wait_until
 
 UPDATED_NS = 1605195918306274000
 
@@ -34,7 +40,9 @@ def _bar(ticker: str, close: float, ts_ms: int = 1673298000000) -> GroupedDailyA
     return GroupedDailyAgg.from_dict({"T": ticker, "c": close, "t": ts_ms})
 
 
-def _source(tickers: list[str], poll_interval: float = 60.0) -> tuple[MassiveDataSource, PriceCache]:
+def _source(
+    tickers: list[str], poll_interval: float = 60.0
+) -> tuple[MassiveDataSource, PriceCache]:
     """A source with a mocked REST client and the given tickers."""
     cache = PriceCache()
     source = MassiveDataSource(api_key="test-key", price_cache=cache, poll_interval=poll_interval)
@@ -67,7 +75,6 @@ class TestSnapshotPrice:
         assert snapshot_price(_snap("AAPL")) is None
 
 
-@pytest.mark.asyncio
 class TestSnapshotMode:
     """Polling the full market snapshot endpoint."""
 
@@ -147,7 +154,6 @@ class TestSnapshotMode:
         source._client.get_snapshot_all.assert_not_called()
 
 
-@pytest.mark.asyncio
 class TestEodMode:
     """Fallback to grouped daily closes for plans without snapshot access."""
 
@@ -177,7 +183,7 @@ class TestEodMode:
         await source._poll_once()
         days = [c.args[0] for c in source._client.get_grouped_daily_aggs.call_args_list]
         assert len(days) == 4
-        assert days[0] == date.today().isoformat()
+        assert days[0] == datetime.now(ZoneInfo("America/New_York")).date().isoformat()
         assert cache.get_price("AAPL") == 110.0
         assert cache.get("AAPL").prev_close == 100.0
 
@@ -206,13 +212,14 @@ class TestEodMode:
         assert cache.get("AAPL") is None
 
     async def test_eod_interval_is_at_least_an_hour(self):
-        source, _ = _source(["AAPL"], poll_interval=15.0)
+        """Once every ticker has a price, EOD polls at most hourly."""
+        source, cache = _source(["AAPL"], poll_interval=15.0)
+        cache.update("AAPL", 110.0)
         assert source._current_interval() == 15.0
         source._mode = "eod"
         assert source._current_interval() == 3600.0
 
 
-@pytest.mark.asyncio
 class TestLifecycle:
     """Ticker management and start/stop."""
 
@@ -248,3 +255,107 @@ class TestLifecycle:
         source, _ = _source([])
         await source.stop()
         await source.stop()
+
+
+class TestRobustness:
+    """Network stalls and concurrent watchlist changes."""
+
+    async def test_request_times_out_on_silent_server(self):
+        """A server that accepts but never answers must not hang the poller.
+
+        massive 2.2.0 builds a urllib3 Timeout but never applies it; the source
+        installs it on the connection pool.
+        """
+        with socket.socket() as server:
+            server.bind(("127.0.0.1", 0))
+            server.listen()
+            source = MassiveDataSource("k", PriceCache(), request_timeout=0.1)
+            source._client.BASE = f"http://127.0.0.1:{server.getsockname()[1]}"
+            call = asyncio.to_thread(source._client.get_snapshot_all, "stocks", tickers=["AAPL"])
+            with pytest.raises(Exception) as err:
+                await asyncio.wait_for(call, timeout=5)
+            assert not isinstance(err.value, TimeoutError)
+
+    async def test_ticker_removed_during_poll_stays_removed(self):
+        """A poll in flight when a ticker is removed must not write it back."""
+        source, cache = _source(["AAPL", "GOOGL"])
+
+        in_flight = threading.Event()
+
+        def slow_snapshots(*args, **kwargs):
+            in_flight.set()
+            time.sleep(0.1)
+            return [_full_snap("AAPL", 190.0, 189.0), _full_snap("GOOGL", 175.0, 170.0)]
+
+        source._client.get_snapshot_all.side_effect = slow_snapshots
+        poll = asyncio.create_task(source._poll_once())
+        await wait_until(in_flight.is_set)
+        await source.remove_ticker("GOOGL")
+        await poll
+        assert cache.get_price("AAPL") == 190.0
+        assert "GOOGL" not in cache
+
+    async def test_eod_ticker_removed_during_poll_stays_removed(self):
+        source, cache = _source(["AAPL", "GOOGL"])
+        source._mode = "eod"
+
+        in_flight = threading.Event()
+
+        def slow_bars(day):
+            in_flight.set()
+            time.sleep(0.1)
+            return [_bar("AAPL", 110.0), _bar("GOOGL", 120.0)]
+
+        source._client.get_grouped_daily_aggs.side_effect = slow_bars
+        poll = asyncio.create_task(source._poll_once())
+        await wait_until(in_flight.is_set)
+        await source.remove_ticker("GOOGL")
+        await poll
+        assert cache.get_price("AAPL") == 110.0
+        assert "GOOGL" not in cache
+
+
+class TestPollScheduling:
+    """When the poll loop polls, per mode."""
+
+    async def test_eod_retries_soon_while_prices_missing(self):
+        """A failed first EOD poll or a newly added ticker is retried within a minute."""
+        source, cache = _source(["AAPL"], poll_interval=15.0)
+        source._mode = "eod"
+        assert source._current_interval() == MassiveDataSource.EOD_RETRY_INTERVAL
+        cache.update("AAPL", 110.0)
+        assert source._current_interval() == 3600.0
+        await source.add_ticker("MSFT")
+        assert source._current_interval() == MassiveDataSource.EOD_RETRY_INTERVAL
+
+    async def test_snapshot_loop_polls_every_interval(self):
+        source, _ = _source(["AAPL"], poll_interval=0.02)
+        source._client.get_snapshot_all.return_value = []
+        task = asyncio.create_task(source._poll_loop())
+        await wait_until(lambda: source._client.get_snapshot_all.call_count >= 3)
+        task.cancel()
+
+    async def test_eod_loop_fetches_added_ticker_then_backs_off(self):
+        """In EOD mode the loop fills a missing ticker on the short cycle, then waits an hour."""
+        source, cache = _source(["AAPL"], poll_interval=15.0)
+        source._mode = "eod"
+        source.EOD_RETRY_INTERVAL = 0.02
+        source._client.get_grouped_daily_aggs.return_value = [_bar("AAPL", 110.0)]
+        task = asyncio.create_task(source._poll_loop())
+        await wait_until(lambda: "AAPL" in cache)
+        assert cache.get_price("AAPL") == 110.0
+        calls = source._client.get_grouped_daily_aggs.call_count
+        await asyncio.sleep(0.1)
+        task.cancel()
+        assert source._client.get_grouped_daily_aggs.call_count == calls
+
+    async def test_eod_uses_us_eastern_date(self):
+        """Late evening in ET is already tomorrow in UTC; EOD must ask for the ET date."""
+        source, _ = _source(["AAPL"])
+        source._mode = "eod"
+        source._client.get_grouped_daily_aggs.return_value = [_bar("AAPL", 110.0)]
+        late_et = datetime(2026, 1, 5, 21, 0, tzinfo=ZoneInfo("America/New_York"))  # 02:00 UTC 6th
+        with patch("app.market.massive_client.datetime") as fake:
+            fake.now.side_effect = lambda tz=None: late_et.astimezone(tz)
+            await source._poll_once()
+        assert source._client.get_grouped_daily_aggs.call_args_list[0].args[0] == "2026-01-05"

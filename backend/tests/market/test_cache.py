@@ -125,3 +125,17 @@ class TestPriceCache:
         """Tickers never given a prev_close have None."""
         cache = PriceCache()
         assert cache.update("AAPL", 190.0).prev_close is None
+
+    def test_remove_bumps_version(self):
+        """Removing a ticker is a change SSE clients must see."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.0)
+        v = cache.version
+        cache.remove("AAPL")
+        assert cache.version == v + 1
+
+    def test_remove_unknown_keeps_version(self):
+        """Removing an absent ticker changes nothing."""
+        cache = PriceCache()
+        cache.remove("AAPL")
+        assert cache.version == 0

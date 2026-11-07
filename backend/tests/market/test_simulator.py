@@ -1,5 +1,10 @@
 """Tests for GBMSimulator."""
 
+import math
+
+import numpy as np
+import pytest
+
 from app.market.seed_prices import SEED_PRICES
 from app.market.simulator import GBMSimulator
 
@@ -52,8 +57,8 @@ class TestGBMSimulator:
         sim = GBMSimulator(tickers=["AAPL"])
         sim.remove_ticker("NOPE")  # Should not raise
 
-    def test_unknown_ticker_gets_random_seed_price(self):
-        """Test that unknown tickers get random seed prices."""
+    def test_unknown_ticker_seed_in_range(self):
+        """Unknown tickers get a seed price between $50 and $300."""
         sim = GBMSimulator(tickers=["ZZZZ"])
         price = sim.get_price("ZZZZ")
         assert price is not None
@@ -121,20 +126,15 @@ class TestGBMSimulator:
         assert 0 < GBMSimulator.DEFAULT_DT < 0.0001
 
     def test_prices_rounded_to_two_decimals(self):
-        """Test that prices are rounded to 2 decimal places."""
-        sim = GBMSimulator(tickers=["AAPL"])
-        result = sim.step()
-        price_str = str(result["AAPL"])
-        # Check that we have at most 2 decimal places
-        if '.' in price_str:
-            decimal_part = price_str.split('.')[1]
-            assert len(decimal_part) <= 2
+        """step() returns prices rounded to cents."""
+        sim = GBMSimulator(tickers=["AAPL", "TSLA"])
+        for _ in range(100):
+            for price in sim.step().values():
+                assert round(price, 2) == price
 
 
 def test_seed_price_tracked():
     """Seed price stays fixed while the live price moves, and is dropped on remove."""
-    from app.market.simulator import GBMSimulator
-
     sim = GBMSimulator(["AAPL"], event_probability=0.0)
     for _ in range(100):
         sim.step()
@@ -142,3 +142,53 @@ def test_seed_price_tracked():
     assert sim.get_price("AAPL") != 190.00
     sim.remove_ticker("AAPL")
     assert sim.get_seed_price("AAPL") is None
+
+
+def test_unknown_ticker_seed_is_deterministic():
+    """An unknown ticker gets the same seed price in every simulator (e.g. after restart)."""
+    assert GBMSimulator(["ZZZZ"]).get_seed_price("ZZZZ") == GBMSimulator(["ZZZZ"]).get_seed_price(
+        "ZZZZ"
+    )
+    assert GBMSimulator(["ZZZZ"]).get_seed_price("ZZZZ") != GBMSimulator(["YYYY"]).get_seed_price(
+        "YYYY"
+    )
+
+
+def _log_returns(tickers: list[str], steps: int) -> np.ndarray:
+    """Per-step log returns (steps x tickers) from a seeded, event-free simulator."""
+    np.random.seed(42)
+    sim = GBMSimulator(tickers, event_probability=0.0)
+    prices = [[sim._prices[t] for t in tickers]]
+    for _ in range(steps):
+        sim.step()
+        prices.append([sim._prices[t] for t in tickers])
+    return np.diff(np.log(np.array(prices)), axis=0)
+
+
+def test_gbm_volatility_matches_sigma():
+    """Per-tick log-return std is sigma * sqrt(dt) (AAPL sigma=0.22, TSLA sigma=0.50)."""
+    returns = _log_returns(["AAPL", "TSLA"], 20_000)
+    dt = GBMSimulator.DEFAULT_DT
+    for i, sigma in enumerate([0.22, 0.50]):
+        assert returns[:, i].std() == pytest.approx(sigma * math.sqrt(dt), rel=0.03)
+
+
+def test_gbm_correlations_match_sector_groups():
+    """Realised correlations match the configured tech / finance / TSLA structure."""
+    tickers = ["AAPL", "GOOGL", "JPM", "V", "TSLA"]
+    corr = np.corrcoef(_log_returns(tickers, 20_000).T)
+    assert corr[0, 1] == pytest.approx(0.6, abs=0.03)  # tech-tech
+    assert corr[2, 3] == pytest.approx(0.5, abs=0.03)  # finance-finance
+    assert corr[0, 2] == pytest.approx(0.3, abs=0.03)  # cross-sector
+    assert corr[4, 0] == pytest.approx(0.3, abs=0.03)  # TSLA
+
+
+def test_cholesky_handles_many_tickers():
+    """The correlation matrix stays positive-definite with 60 mixed tickers."""
+    tickers = list(SEED_PRICES) + [f"X{i}" for i in range(50)]
+    sim = GBMSimulator(tickers)
+    assert sim._cholesky.shape == (60, 60)
+
+
+def test_duplicate_initial_tickers_tracked_once():
+    assert GBMSimulator(["AAPL", "AAPL"]).get_tickers() == ["AAPL"]

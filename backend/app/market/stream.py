@@ -51,36 +51,34 @@ async def _generate_events(
     price_cache: PriceCache,
     request: Request,
     interval: float = 0.5,
+    keepalive: float = 15.0,
 ) -> AsyncGenerator[str, None]:
-    """Async generator that yields SSE-formatted price events.
+    """Yield SSE events: a retry directive, then the full price snapshot on every change.
 
-    Sends all prices every `interval` seconds. Stops when the client
-    disconnects (detected via request.is_disconnected()).
+    The cache is checked every `interval` seconds and a snapshot is sent whenever its
+    version changes (updates and removals; an emptied cache sends `{}`). A `: ping`
+    comment is sent after `keepalive` idle seconds so proxies keep the stream open.
+    Stops when the client disconnects.
     """
-    # Tell the client to retry after 1 second if the connection drops
     yield "retry: 1000\n\n"
 
-    last_version = -1
+    loop = asyncio.get_running_loop()
+    last_version = 0  # version 0 means the cache has never been written
+    last_sent = loop.time()
     client_ip = request.client.host if request.client else "unknown"
     logger.info("SSE client connected: %s", client_ip)
 
     try:
-        while True:
-            # Check for client disconnect
-            if await request.is_disconnected():
-                logger.info("SSE client disconnected: %s", client_ip)
-                break
-
-            current_version = price_cache.version
-            if current_version != last_version:
-                last_version = current_version
-                prices = price_cache.get_all()
-
-                if prices:
-                    data = {ticker: update.to_dict() for ticker, update in prices.items()}
-                    payload = json.dumps(data)
-                    yield f"data: {payload}\n\n"
-
+        while not await request.is_disconnected():
+            version = price_cache.version
+            if version != last_version:
+                last_version = version
+                data = {t: u.to_dict() for t, u in price_cache.get_all().items()}
+                yield f"data: {json.dumps(data)}\n\n"
+                last_sent = loop.time()
+            elif loop.time() - last_sent >= keepalive:
+                yield ": ping\n\n"
+                last_sent = loop.time()
             await asyncio.sleep(interval)
-    except asyncio.CancelledError:
-        logger.info("SSE stream cancelled for: %s", client_ip)
+    finally:
+        logger.info("SSE client disconnected: %s", client_ip)

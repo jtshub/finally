@@ -10,7 +10,7 @@ import random
 import numpy as np
 
 from .cache import PriceCache
-from .interface import MarketDataSource
+from .interface import MarketDataSource, normalize_ticker
 from .seed_prices import (
     CORRELATION_GROUPS,
     CROSS_GROUP_CORR,
@@ -23,6 +23,11 @@ from .seed_prices import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _unknown_seed_price(ticker: str) -> float:
+    """Seed price in [50, 300) derived from the ticker, so it is stable across restarts."""
+    return round(random.Random(ticker).uniform(50.0, 300.0), 2)
 
 
 class GBMSimulator:
@@ -154,7 +159,7 @@ class GBMSimulator:
         if ticker in self._prices:
             return
         self._tickers.append(ticker)
-        self._seeds[ticker] = SEED_PRICES.get(ticker, random.uniform(50.0, 300.0))
+        self._seeds[ticker] = SEED_PRICES.get(ticker) or _unknown_seed_price(ticker)
         self._prices[ticker] = self._seeds[ticker]
         self._params[ticker] = TICKER_PARAMS.get(ticker, dict(DEFAULT_PARAMS))
 
@@ -224,6 +229,7 @@ class SimulatorDataSource(MarketDataSource):
         self._task: asyncio.Task | None = None
 
     async def start(self, tickers: list[str]) -> None:
+        tickers = list(dict.fromkeys(normalize_ticker(t) for t in tickers))
         self._sim = GBMSimulator(
             tickers=tickers,
             event_probability=self._event_prob,
@@ -245,6 +251,7 @@ class SimulatorDataSource(MarketDataSource):
         logger.info("Simulator stopped")
 
     async def add_ticker(self, ticker: str) -> None:
+        ticker = normalize_ticker(ticker)
         if self._sim and self._sim.get_price(ticker) is None:
             self._sim.add_ticker(ticker)
             # Seed cache immediately so the ticker has a price right away
@@ -252,6 +259,7 @@ class SimulatorDataSource(MarketDataSource):
             logger.info("Simulator: added ticker %s", ticker)
 
     async def remove_ticker(self, ticker: str) -> None:
+        ticker = normalize_ticker(ticker)
         if self._sim:
             self._sim.remove_ticker(ticker)
         self._cache.remove(ticker)

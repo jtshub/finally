@@ -137,7 +137,7 @@ DEFAULT_PARAMS = {"sigma": 0.25, "mu": 0.05}   # tickers added at runtime
 ```
 
 Volatilities are close to the real long-run implied vols of each name. Tickers outside
-the table (e.g. the user adds `PYPL`) get `DEFAULT_PARAMS`, a random seed price between $50 and $300,
+the table (e.g. the user adds `PYPL`) get `DEFAULT_PARAMS`, a seed price between $50 and $300 derived from the ticker name (so it is the same after a restart),
 and cross-sector correlation 0.3. To make a new ticker realistic, add it to these dicts —
 no code change needed.
 
