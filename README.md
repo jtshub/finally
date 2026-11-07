@@ -28,6 +28,16 @@ uv run pytest                  # run tests
 uv run market_data_demo.py     # live terminal demo of the simulator
 ```
 
+### Quick demo
+
+From the repo root (requires [uv](https://docs.astral.sh/uv/)):
+
+```bash
+bash scripts/demo.sh
+```
+
+This opens a live terminal dashboard of the 10 default tickers with simulated prices, sparklines and a "notable moves" log. It runs for 60 seconds (or until Ctrl+C) and then prints a session summary. No API keys needed.
+
 ## Environment Variables
 
 | Variable | Required | Description |
