@@ -17,10 +17,11 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
 
 ### Core Types
 
-- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, plus properties `change`, `change_percent`, `direction` ("up"/"down"/"flat"), and `to_dict()` for JSON serialization.
+- **`PriceUpdate`** — Immutable dataclass: `ticker`, `price`, `previous_price`, `timestamp`, `prev_close`, plus properties `change`, `change_percent`, `direction` ("up"/"down"/"flat"), `day_change_percent` (vs `prev_close`, or None), and `to_dict()` for JSON serialization.
+  - Tick change (`previous_price`, `direction`) drives the flash animation; daily change (`prev_close`, `day_change_percent`) drives the watchlist "daily change %" column.
 
 - **`PriceCache`** — Thread-safe in-memory store. Key methods:
-  - `update(ticker, price, timestamp=None) -> PriceUpdate`
+  - `update(ticker, price, timestamp=None, prev_close=None) -> PriceUpdate` (`prev_close=None` keeps the existing value)
   - `get(ticker) -> PriceUpdate | None`
   - `get_price(ticker) -> float | None`
   - `get_all() -> dict[str, PriceUpdate]`
@@ -29,7 +30,17 @@ from app.market import PriceCache, PriceUpdate, MarketDataSource, create_market_
 
 - **`MarketDataSource`** — Abstract interface implemented by `SimulatorDataSource` and `MassiveDataSource`. Lifecycle: `start(tickers)` -> `add_ticker()` / `remove_ticker()` -> `stop()`.
 
-- **`create_market_data_source(cache)`** — Factory. Returns `MassiveDataSource` if `MASSIVE_API_KEY` is set, otherwise `SimulatorDataSource`.
+- **`create_market_data_source(cache)`** — Factory. Returns `MassiveDataSource` if `MASSIVE_API_KEY` is set (polling every `MASSIVE_POLL_INTERVAL` seconds, default 15), otherwise `SimulatorDataSource`.
+
+### Source behaviour
+
+| | Simulator | Massive |
+|---|---|---|
+| `prev_close` | Seed price | `prevDay.c` from snapshot |
+| `add_ticker()` | Price available immediately | Price appears on next poll |
+| Free (Basic) key | — | Snapshot 403 `NOT_AUTHORIZED` → auto-switches to end-of-day closes, polled hourly |
+
+Callers must tolerate `cache.get_price(t) is None` briefly after `add_ticker()` in Massive mode.
 
 ### SSE Streaming
 

@@ -14,6 +14,7 @@ class PriceUpdate:
     price: float
     previous_price: float
     timestamp: float = field(default_factory=time.time)  # Unix seconds
+    prev_close: float | None = None  # Previous session close (drives daily change %)
 
     @property
     def change(self) -> float:
@@ -36,6 +37,13 @@ class PriceUpdate:
             return "down"
         return "flat"
 
+    @property
+    def day_change_percent(self) -> float | None:
+        """Percentage change from the previous session close, or None if unknown."""
+        if not self.prev_close:
+            return None
+        return round((self.price - self.prev_close) / self.prev_close * 100, 4)
+
     def to_dict(self) -> dict:
         """Serialize for JSON / SSE transmission."""
         return {
@@ -46,4 +54,6 @@ class PriceUpdate:
             "change": self.change,
             "change_percent": self.change_percent,
             "direction": self.direction,
+            "prev_close": self.prev_close,
+            "day_change_percent": self.day_change_percent,
         }

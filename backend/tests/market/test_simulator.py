@@ -129,3 +129,16 @@ class TestGBMSimulator:
         if '.' in price_str:
             decimal_part = price_str.split('.')[1]
             assert len(decimal_part) <= 2
+
+
+def test_seed_price_tracked():
+    """Seed price stays fixed while the live price moves, and is dropped on remove."""
+    from app.market.simulator import GBMSimulator
+
+    sim = GBMSimulator(["AAPL"], event_probability=0.0)
+    for _ in range(100):
+        sim.step()
+    assert sim.get_seed_price("AAPL") == 190.00
+    assert sim.get_price("AAPL") != 190.00
+    sim.remove_ticker("AAPL")
+    assert sim.get_seed_price("AAPL") is None

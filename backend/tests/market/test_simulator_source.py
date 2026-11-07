@@ -136,3 +136,34 @@ class TestSimulatorDataSource:
         # Just verify it starts and stops cleanly
         await asyncio.sleep(0.2)
         await source.stop()
+
+    async def test_seed_price_is_prev_close(self):
+        """Cache is seeded with the seed price as prev_close, kept across ticks."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=0.05)
+        await source.start(["AAPL"])
+        assert cache.get("AAPL").prev_close == 190.00
+        await asyncio.sleep(0.15)
+        assert cache.get("AAPL").prev_close == 190.00
+        assert cache.get("AAPL").day_change_percent is not None
+        await source.stop()
+
+    async def test_added_ticker_has_prev_close(self):
+        """A ticker added at runtime has its seed as prev_close."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=10.0)
+        await source.start(["AAPL"])
+        await source.add_ticker("PYPL")
+        update = cache.get("PYPL")
+        assert update.prev_close == update.price
+        await source.stop()
+
+    async def test_add_existing_ticker_keeps_price(self):
+        """Re-adding a tracked ticker does not reset its cached price."""
+        cache = PriceCache()
+        source = SimulatorDataSource(price_cache=cache, update_interval=10.0)
+        await source.start(["AAPL"])
+        cache.update("AAPL", 999.0)
+        await source.add_ticker("AAPL")
+        assert cache.get_price("AAPL") == 999.0
+        await source.stop()

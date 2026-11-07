@@ -101,3 +101,27 @@ class TestPriceCache:
         cache = PriceCache()
         update = cache.update("AAPL", 190.12345)
         assert update.price == 190.12
+
+    def test_prev_close_stored(self):
+        """prev_close passed on update is stored and rounded."""
+        cache = PriceCache()
+        update = cache.update("AAPL", 190.0, prev_close=180.123)
+        assert update.prev_close == 180.12
+
+    def test_prev_close_carried_forward(self):
+        """prev_close=None keeps the existing prev_close."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.0, prev_close=180.0)
+        update = cache.update("AAPL", 191.0)
+        assert update.prev_close == 180.0
+
+    def test_prev_close_replaced(self):
+        """A new prev_close replaces the old one."""
+        cache = PriceCache()
+        cache.update("AAPL", 190.0, prev_close=180.0)
+        assert cache.update("AAPL", 191.0, prev_close=185.0).prev_close == 185.0
+
+    def test_prev_close_default_none(self):
+        """Tickers never given a prev_close have None."""
+        cache = PriceCache()
+        assert cache.update("AAPL", 190.0).prev_close is None

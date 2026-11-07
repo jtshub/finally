@@ -1,6 +1,16 @@
 # Market Data Backend — Summary
 
-**Status:** Complete, tested, reviewed, all issues resolved.
+**Status:** Complete, tested, reviewed. Updated 2026-11-07 to apply all fixes in `MARKET_INTERFACE.md` §8.
+
+## 2026-11-07 Revision
+
+- **Massive fixed** — the old code read `last_trade.timestamp` (does not exist; it is `sip_timestamp`), so every snapshot was skipped and the cache never filled. Now uses `snap.updated / 1e9` (ns) and a price fallback chain `lastTrade → min → day → prevDay` (`snapshot_price()`) so Starter plans work.
+- **Free keys work** — a snapshot 403 `NOT_AUTHORIZED` switches to `eod` mode (grouped-daily closes, hourly).
+- **Daily change %** — `PriceUpdate.prev_close` + `day_change_percent`; Massive uses `prevDay.c`, simulator uses the seed price.
+- **`MASSIVE_POLL_INTERVAL`** env var (default 15 s); added `.env.example`.
+- **SSE router** is now built per `create_stream_router()` call (was a module-level router that accumulated duplicate routes).
+- **Tests** — Massive tests now build real `TickerSnapshot`/`GroupedDailyAgg` models from documented JSON instead of `MagicMock`, so wrong field names fail. New `test_stream.py`.
+- Still unverified: the exact 403 body from a real Basic key (see `MARKET_INTERFACE.md` §9).
 
 ## What Was Built
 
@@ -44,7 +54,7 @@ MarketDataSource (ABC)
 
 ## Test Suite
 
-**73 tests, all passing.** 6 test modules in `backend/tests/market/`.
+**106 tests, all passing; 98% coverage.** 7 test modules in `backend/tests/market/`. (Table below is from the original build.)
 
 | Module | Tests | Coverage |
 |--------|-------|----------|

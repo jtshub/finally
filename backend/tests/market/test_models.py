@@ -75,3 +75,19 @@ class TestPriceUpdate:
 
         with pytest.raises(AttributeError):
             update.price = 200.00  # Should raise error
+
+    def test_day_change_percent(self):
+        """Daily change is measured against prev_close."""
+        update = PriceUpdate("AAPL", 110.0, 109.0, 1.0, prev_close=100.0)
+        assert update.day_change_percent == 10.0
+
+    def test_day_change_percent_unknown(self):
+        """No prev_close means no daily change."""
+        update = PriceUpdate("AAPL", 110.0, 109.0, 1.0)
+        assert update.day_change_percent is None
+
+    def test_to_dict_includes_daily_change(self):
+        """to_dict exposes prev_close and day_change_percent."""
+        result = PriceUpdate("AAPL", 190.0, 190.0, 1.0, prev_close=200.0).to_dict()
+        assert result["prev_close"] == 200.0
+        assert result["day_change_percent"] == -5.0
