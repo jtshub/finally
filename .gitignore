@@ -205,3 +205,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# FinAlly runtime database (volume mount target)
+db/*.db
+db/*.db-journal
+db/*.db-wal
+db/*.db-shm
+
+# Frontend build artifacts
+node_modules/
+.next/
+frontend/out/
+backend/static/

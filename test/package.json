@@ -1,0 +1,15 @@
+{
+  "name": "finally-e2e",
+  "private": true,
+  "description": "Playwright E2E suite for FinAlly",
+  "scripts": {
+    "test": "playwright test",
+    "test:api": "playwright test api",
+    "test:ui": "playwright test --grep-invert @api",
+    "report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1",
+    "@types/node": "^22.10.0"
+  }
+}

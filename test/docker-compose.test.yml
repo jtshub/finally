@@ -1,0 +1,35 @@
+# E2E run: builds the app from the root Dockerfile with a mock LLM and a fresh,
+# throwaway database, then runs the Playwright suite against it.
+#
+#   docker compose -f test/docker-compose.test.yml up --build \
+#     --abort-on-container-exit --exit-code-from playwright
+#   docker compose -f test/docker-compose.test.yml down
+services:
+  finally:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    environment:
+      LLM_MOCK: "true"
+      FINALLY_DB_PATH: /app/db/finally.db
+    tmpfs:
+      - /app/db
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  playwright:
+    image: mcr.microsoft.com/playwright:v1.65.1-noble
+    depends_on:
+      finally:
+        condition: service_healthy
+    working_dir: /e2e
+    environment:
+      BASE_URL: http://finally:8000
+      CI: "true"
+    volumes:
+      - ./:/e2e
+      - /e2e/node_modules
+    command: ["bash", "-c", "npm ci && npx playwright test"]

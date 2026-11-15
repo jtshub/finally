@@ -9,6 +9,9 @@ dependencies = [
     "uvicorn[standard]>=0.32.0",
     "numpy>=2.0.0",
     "massive>=1.0.0",
+    "litellm>=1.109.1",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
 ]
 
 [build-system]
@@ -50,6 +53,7 @@ exclude_lines = [
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=7.1.0",
